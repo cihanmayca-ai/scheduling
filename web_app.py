@@ -2,10 +2,17 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from ortools.sat.python import cp_model
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- Sayfa Ayarları ---
 st.set_page_config(page_title="Vardiya Sistemi", page_icon="⛽", layout="wide")
+
+# --- Türkçe Tarih Fonksiyonları ---
+aylar_tr = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+gunler_tr = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+
+def tarih_yaziya_cevir(tarih_obj):
+    return f"{tarih_obj.day} {aylar_tr[tarih_obj.month]} {gunler_tr[tarih_obj.weekday()]}"
 
 # --- Veritabanı Kurulumu ---
 def veritabanini_hazirla():
@@ -40,9 +47,9 @@ def verileri_cek(hafta_num):
 
 # --- Web Arayüzü (Sol Menü) ---
 st.sidebar.title("⛽ Benzinlik Yönetimi")
-menu = st.sidebar.radio("Menü", ["Ana Ekran (Vardiya Hazırla)", "Personel Listesi"])
+menu = st.sidebar.radio("Menü", ["📅 Yeni Vardiya Üret", "🗂️ Geçmiş Vardiyalar", "👥 Personel Listesi"])
 
-if menu == "Personel Listesi":
+if menu == "👥 Personel Listesi":
     st.title("👥 Personel Yönetimi")
     baglanti = sqlite3.connect('vardiya_sistemi.db')
     df = pd.read_sql_query("SELECT id as ID, ad_soyad as 'Ad Soyad', rol as Rol, aktif_mi as Durum FROM Personeller", baglanti)
@@ -62,12 +69,39 @@ if menu == "Personel Listesi":
                 baglanti.close()
                 st.success("Personel eklendi! Listeyi yenilemek için sayfayı tazeleyin.")
 
-elif menu == "Ana Ekran (Vardiya Hazırla)":
+elif menu == "🗂️ Geçmiş Vardiyalar":
+    st.title("🗂️ Geçmiş Vardiyalar (Aylık Görünüm)")
+    baglanti = sqlite3.connect('vardiya_sistemi.db')
+    df_gecmis = pd.read_sql_query('''
+        SELECT v.hafta_numarasi as 'Hafta', v.tarih as 'Tarih', p.ad_soyad as 'Personel', p.rol as 'Rol', v.vardiya_tipi as 'Vardiya'
+        FROM VardiyaKayitlari v
+        JOIN Personeller p ON v.personel_id = p.id
+        ORDER BY v.tarih DESC
+    ''', baglanti)
+    baglanti.close()
+
+    if df_gecmis.empty:
+        st.info("Henüz kaydedilmiş bir vardiya bulunmuyor.")
+    else:
+        haftalar = df_gecmis['Hafta'].unique()
+        secilen_hafta = st.selectbox("Görüntülemek İstediğiniz Haftayı Seçin", haftalar)
+        
+        df_secilen = df_gecmis[df_gecmis['Hafta'] == secilen_hafta]
+        # Tabloyu okunaklı hale getirmek için pivot yapıyoruz
+        pivot_df = df_secilen.pivot_table(index='Tarih', columns='Vardiya', values='Personel', aggfunc=lambda x: ', '.join(x)).reset_index()
+        st.table(pivot_df)
+
+elif menu == "📅 Yeni Vardiya Üret":
     st.title("📅 Haftalık Vardiya Planlama")
     
-    if st.button("🚀 Yeni Hafta Vardiyasını Üret", type="primary"):
+    # Tarih Seçici (Pazartesi gününü referans alır)
+    bugun = datetime.now()
+    gecerli_pazartesi = bugun - timedelta(days=bugun.weekday())
+    secilen_tarih = st.date_input("Haftanın İlk Gününü Seçin (Pazartesi)", value=gecerli_pazartesi)
+    hafta_num = secilen_tarih.isocalendar()[1]
+    
+    if st.button("🚀 Seçili Hafta İçin Vardiya Üret", type="primary"):
         with st.spinner("Yapay zeka kuralları hesaplıyor..."):
-            hafta_num = datetime.now().isocalendar()[1]
             pompacilar, marketciler, p_sozluk, tum, gececiler = verileri_cek(hafta_num)
             
             model = cp_model.CpModel()
@@ -77,52 +111,79 @@ elif menu == "Ana Ekran (Vardiya Hazırla)":
                     for v in range(3):
                         mesailer[(p, g, v)] = model.NewBoolVar(f'm_{p}_{g}_{v}')
             
-            # Kurallar
+            # Kuralların Atanması (Değişkene atayarak Streamlit "None" bug'ını önlüyoruz)
             for p in tum:
                 for g in range(7):
-                    model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
+                    _ = model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
                 if p in pompacilar:
-                    model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == 6)
+                    _ = model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == 6)
                 else:
-                    model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == 5)
+                    _ = model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == 5)
             
             for g in range(7):
-                model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) == 1)
-                model.Add(sum(mesailer[(m, g, 0)] for m in marketciler) == 0)
+                _ = model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) == 1)
+                _ = model.Add(sum(mesailer[(m, g, 0)] for m in marketciler) == 0)
                 for v in [1, 2]:
-                    model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= 2)
-                    if g < 5: model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= 1)
+                    _ = model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= 2)
+                    if g < 5: _ = model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= 1)
             
             for m in marketciler:
                 for g in [5, 6]:
-                    for v in range(3): model.Add(mesailer[(m, g, v)] == 0)
+                    for v in range(3): _ = model.Add(mesailer[(m, g, v)] == 0)
             
             for p in gececiler:
                 if p in tum:
-                    for g in range(7): model.Add(mesailer[(p, g, 0)] == 0)
+                    for g in range(7): _ = model.Add(mesailer[(p, g, 0)] == 0)
             
             solver = cp_model.CpSolver()
             status = solver.Solve(model)
             
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-                st.success("Vardiya başarıyla oluşturuldu!")
-                gunler = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
+                st.success(f"{hafta_num}. Hafta vardiyası başarıyla oluşturuldu ve veritabanına kaydedildi!")
+                
+                # Çıktı ve Veritabanı Kayıt Aşaması
                 tablo_verisi = []
+                kayit_listesi = []
                 
                 for g in range(7):
-                    satir = {"Gün": gunler[g]}
+                    # Tam tarihi hesaplama (Örn: 13 Temmuz Pazartesi)
+                    guncel_tarih = secilen_tarih + timedelta(days=g)
+                    tarih_metni = tarih_yaziya_cevir(guncel_tarih)
+                    tarih_db_formati = guncel_tarih.strftime('%Y-%m-%d')
+                    
+                    satir = {"Tarih ve Gün": tarih_metni}
+                    calisan_idleri = []
+                    
                     for v_idx, v_isim in enumerate(['Gece (00-08)', 'Sabah (08-16)', 'Akşam (16-00)']):
                         isimler = []
                         for p in tum:
                             if solver.Value(mesailer[(p, g, v_idx)]) == 1:
-                                isim = p_sozluk[p]['ad'].split()[0]
+                                isim = p_sozluk[p]['ad'].split()[0] # Sadece ilk isim
                                 if v_idx == 0 and p in pompacilar: isim += " (M+P)"
                                 isimler.append(isim)
+                                calisan_idleri.append(p)
+                                kayit_listesi.append((p, tarih_db_formati, hafta_num, v_isim.split(' ')[0]))
+                                
                         satir[v_isim] = ", ".join(isimler)
+                    
+                    # İzinlileri Hesaplama
+                    izinli_isimleri = []
+                    for p in tum:
+                        if p not in calisan_idleri:
+                            izinli_isimleri.append(p_sozluk[p]['ad'].split()[0])
+                    satir["İzinliler"] = ", ".join(izinli_isimleri)
+                    
                     tablo_verisi.append(satir)
                 
-                # Tabloyu Ekrana Bas
+                # Sonuçları veritabanına kaydet (Eski kayıt varsa ezmemek için önce temizler)
+                baglanti = sqlite3.connect('vardiya_sistemi.db')
+                baglanti.execute("DELETE FROM VardiyaKayitlari WHERE hafta_numarasi = ?", (hafta_num,))
+                baglanti.executemany("INSERT INTO VardiyaKayitlari (personel_id, tarih, hafta_numarasi, vardiya_tipi) VALUES (?, ?, ?, ?)", kayit_listesi)
+                baglanti.commit()
+                baglanti.close()
+                
+                # Tabloyu ekrana tam genişlikte bas
                 df_sonuc = pd.DataFrame(tablo_verisi)
                 st.table(df_sonuc)
             else:
-                st.error("Mevcut kısıtlarla uygun bir dağılım bulunamadı!")
+                st.error("Mevcut kurallar ve izinlerle uygun bir dağılım bulunamadı!")
