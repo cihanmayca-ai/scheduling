@@ -41,6 +41,7 @@ def veritabanini_hazirla():
         ("min_pompaci_gece", 2),      # gece vardiyasında en az kaç pompacı
         ("min_pompaci_gunduz", 2),    # sabah/akşam vardiyasında en az kaç pompacı
         ("min_market_gunduz", 1),     # sabah/akşam vardiyasında en az kaç market
+        ("maks_market_vardiya", 1),   # herhangi bir vardiyada en fazla kaç market çalışanı olabilir
     ]
     for k, v in varsayilanlar: cursor.execute("INSERT OR IGNORE INTO Ayarlar VALUES (?, ?)", (k, v))
     baglanti.commit()
@@ -256,11 +257,14 @@ elif menu == "⚙️ Kural Ayarları":
     min_pompaci_gece = st.number_input("Gece vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
     min_pompaci_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gunduz"))
     min_market_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Market çalışanı?", min_value=0, max_value=10, value=get_deger("min_market_gunduz"))
+    maks_market_vardiya = st.number_input("Herhangi bir vardiyada en fazla kaç Market çalışanı olabilir?", min_value=1, max_value=10, value=get_deger("maks_market_vardiya"))
+    st.caption("Bu sayıyı düşürmek (örn. 1), fazla market çalışanlarının gece vardiyasına da kaydırılabilmesini sağlar.")
 
     if st.button("Min Personel Ayarlarını Kaydet"):
         set_deger("min_pompaci_gece", min_pompaci_gece)
         set_deger("min_pompaci_gunduz", min_pompaci_gunduz)
         set_deger("min_market_gunduz", min_market_gunduz)
+        set_deger("maks_market_vardiya", maks_market_vardiya)
         st.success("Kaydedildi!")
 
 elif menu == "👥 Personel Listesi":
@@ -328,6 +332,7 @@ elif menu == "📅 Yeni Vardiya Üret":
         min_pompaci_gece = get_deger("min_pompaci_gece")
         min_pompaci_gunduz = get_deger("min_pompaci_gunduz")
         min_market_gunduz = get_deger("min_market_gunduz")
+        maks_market_vardiya = get_deger("maks_market_vardiya")
 
         # --- Kapasite ön-kontrolü: gerçek personel yetersizliğini kullanıcıya açıkla ---
         market_gece_ihtiyaci = 1 if k_gece_market else 0
@@ -377,6 +382,10 @@ elif menu == "📅 Yeni Vardiya Üret":
             for v in [1, 2]:
                 model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= min_market_gunduz)
                 model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= min_pompaci_gunduz)
+            # Herhangi bir vardiyada (Gece/Sabah/Akşam) en fazla belirlenen sayıda market çalışanı olsun.
+            # Bu sayede fazla market personeli geceye (pompacıların yanına) kaydırılabilir.
+            for v in range(3):
+                model.Add(sum(mesailer[(m, g, v)] for m in marketciler) <= maks_market_vardiya)
 
         if k_mkt_haftasonu:
             for m in marketciler:
