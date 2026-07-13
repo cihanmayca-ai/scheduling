@@ -14,16 +14,11 @@ st.markdown("""
     .shift-table th, .shift-table td { border: 1px solid #333; padding: 10px; }
     .pompa { color: #3498db; font-weight: bold; }
     .market { color: #e67e22; font-weight: bold; }
-    .izinli { opacity: 0.45; text-decoration: line-through; font-size: 12px; }
-    .rol-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-left: 6px; font-weight: normal; }
-    .rol-tag-pompa { background: rgba(52, 152, 219, 0.2); color: #3498db; }
-    .rol-tag-market { background: rgba(230, 126, 34, 0.2); color: #e67e22; }
-    .izin-hucre { text-align: center; font-size: 11px; font-weight: bold; }
-    .izin-hucre.pompa { background: rgba(52, 152, 219, 0.15); }
-    .izin-hucre.market { background: rgba(230, 126, 34, 0.15); }
-    .legend-box { padding: 8px 12px; background: #262626; border-radius: 6px; display: inline-block; margin-bottom: 10px; }
+    .izinli { color: #e74c3c; font-size: 12px; }
 </style>
 """, unsafe_allow_html=True)
+
+GUN_ISIMLERI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
 
 # --- Veritabanı ---
 def veritabanini_hazirla():
@@ -39,7 +34,7 @@ def veritabanini_hazirla():
         ("gece_market_zorunlu", 0),
         ("gecen_hafta_gece_kisiti", 1),
         ("market_haftasonu_calisir", 1),
-        ("min_pompaci_gece", 2),      # gece vardiyasında en az kaç pompacı (market biri kapsıyorsa 1 azalır)
+        ("min_pompaci_gece", 2),      # gece vardiyasında en az kaç pompacı
         ("min_pompaci_gunduz", 2),    # sabah/akşam vardiyasında en az kaç pompacı
         ("min_market_gunduz", 1),     # sabah/akşam vardiyasında en az kaç market
     ]
@@ -71,12 +66,12 @@ def set_deger(kural_key, deger):
 
 # --- Arayüz ---
 st.sidebar.title("⛽ Benzinlik Yönetimi")
-menu = st.sidebar.radio("Menü", ["📅 Yeni Vardiya Üret", "🏖️ İzin Planlama", "⚙️ Kural Ayarları", "🗂️ Geçmiş Vardiyalar", "👥 Personel Listesi"])
+menu = st.sidebar.radio("Menü", ["📅 Yeni Vardiya Üret", "🧑‍💼 Vardiyalarım", "🏖️ İzin Planlama", "⚙️ Kural Ayarları", "🗂️ Geçmiş Vardiyalar", "👥 Personel Listesi"])
 
 if menu == "🏖️ İzin Planlama":
     st.title("🏖️ İzin Planlama")
     baglanti = sqlite3.connect('vardiya_sistemi.db')
-    personeller = pd.read_sql_query("SELECT id, ad_soyad, rol FROM Personeller WHERE aktif_mi=1", baglanti)
+    personeller = pd.read_sql_query("SELECT id, ad_soyad FROM Personeller WHERE aktif_mi=1", baglanti)
 
     with st.form("izin_form"):
         p_sec = st.selectbox("Personel Seç:", personeller['ad_soyad'].tolist())
@@ -87,47 +82,52 @@ if menu == "🏖️ İzin Planlama":
             baglanti.commit()
             st.success(f"{p_sec} için {tarih_sec} tarihi izinli olarak kaydedildi.")
 
-    st.markdown("---")
-    st.markdown("### 📅 Haftalık İzin Takvimi")
-    st.markdown(
-        "<div class='legend-box'>🔵 <span class='pompa'>Pompacı</span> &nbsp;&nbsp; "
-        "🟠 <span class='market'>Market</span> &nbsp;&nbsp; "
-        "🔲 Boyalı hücre = İzinli</div>",
-        unsafe_allow_html=True
-    )
-
-    hafta_baslangic = st.date_input("Takvimde gösterilecek haftanın ilk günü:", value=datetime.now(), key="izin_takvim_hafta")
-    gun_tarihleri_izin = [(hafta_baslangic + timedelta(days=g)) for g in range(7)]
-
-    izin_kayitlari = pd.read_sql_query("SELECT personel_id, tarih FROM Izinler", baglanti)
-    izin_set_ui = set(zip(izin_kayitlari['personel_id'], izin_kayitlari['tarih']))
-
-    izin_html = "<table class='shift-table'><tr><th>Personel</th>"
-    for g in gun_tarihleri_izin:
-        izin_html += f"<th>{g.strftime('%d %b')}</th>"
-    izin_html += "</tr>"
-
-    # Pompacılar ve marketçiler ayrı bloklar halinde listelensin (roller karışmasın)
-    for rol_adi, rol_class in [("Pompacı", "pompa"), ("Market", "market")]:
-        alt_grup = personeller[personeller['rol'] == rol_adi]
-        if alt_grup.empty:
-            continue
-        for _, row in alt_grup.iterrows():
-            izin_html += f"<tr><td><span class='{rol_class}'>{row['ad_soyad']}</span> <span class='rol-tag rol-tag-{rol_class}'>{row['rol']}</span></td>"
-            for g in gun_tarihleri_izin:
-                tarih_str = g.strftime('%Y-%m-%d')
-                if (row['id'], tarih_str) in izin_set_ui:
-                    izin_html += f"<td class='izin-hucre {rol_class}'>İZİNLİ</td>"
-                else:
-                    izin_html += "<td></td>"
-            izin_html += "</tr>"
-    izin_html += "</table>"
-    st.markdown(izin_html, unsafe_allow_html=True)
-
-    st.markdown("### Kayıtlı Tüm İzinler")
-    izinler = pd.read_sql_query("SELECT p.ad_soyad, p.rol, i.tarih FROM Izinler i JOIN Personeller p ON i.personel_id = p.id ORDER BY i.tarih", baglanti)
+    st.markdown("### Kayıtlı İzinler")
+    izinler = pd.read_sql_query("SELECT p.ad_soyad, i.tarih FROM Izinler i JOIN Personeller p ON i.personel_id = p.id", baglanti)
     st.dataframe(izinler)
     baglanti.close()
+
+elif menu == "🧑‍💼 Vardiyalarım":
+    st.title("🧑‍💼 Kendi Vardiyalarım")
+    baglanti = sqlite3.connect('vardiya_sistemi.db')
+    personeller = pd.read_sql_query("SELECT id, ad_soyad FROM Personeller WHERE aktif_mi=1", baglanti)
+
+    if personeller.empty:
+        st.info("Henüz personel eklenmemiş.")
+        baglanti.close()
+    else:
+        p_sec = st.selectbox("Kendi adınızı seçin:", personeller['ad_soyad'].tolist())
+        p_id = int(personeller[personeller['ad_soyad'] == p_sec]['id'].values[0])
+
+        vardiyalar = pd.read_sql_query(
+            "SELECT tarih, hafta_numarasi, vardiya_tipi FROM VardiyaKayitlari WHERE personel_id=? ORDER BY tarih",
+            baglanti, params=(p_id,)
+        )
+        izinler = pd.read_sql_query(
+            "SELECT tarih FROM Izinler WHERE personel_id=? ORDER BY tarih",
+            baglanti, params=(p_id,)
+        )
+        baglanti.close()
+
+        if vardiyalar.empty:
+            st.info(f"{p_sec} için henüz kayıtlı bir vardiya bulunmuyor.")
+        else:
+            vardiyalar['tarih_dt'] = pd.to_datetime(vardiyalar['tarih'])
+            vardiyalar['Gün'] = vardiyalar['tarih_dt'].dt.weekday.map(lambda i: GUN_ISIMLERI[i])
+            vardiyalar['Tarih'] = vardiyalar['tarih_dt'].dt.strftime('%d %B %Y')
+
+            for hafta, grup in vardiyalar.sort_values('tarih_dt').groupby('hafta_numarasi', sort=False):
+                ilk_gun = grup['tarih_dt'].min().strftime('%d %b')
+                son_gun = grup['tarih_dt'].max().strftime('%d %b')
+                st.markdown(f"#### 🗓️ Hafta {hafta} ({ilk_gun} - {son_gun})")
+                gosterim = grup[['Tarih', 'Gün', 'vardiya_tipi']].rename(columns={'vardiya_tipi': 'Vardiya'})
+                st.dataframe(gosterim, use_container_width=True, hide_index=True)
+
+        if not izinler.empty:
+            st.markdown("#### 🏖️ İzin Günleriniz")
+            st.dataframe(izinler.rename(columns={'tarih': 'Tarih'}), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Kayıtlı izin gününüz bulunmuyor.")
 
 elif menu == "⚙️ Kural Ayarları":
     st.title("⚙️ Kural Ayarları")
@@ -143,9 +143,8 @@ elif menu == "⚙️ Kural Ayarları":
     st.markdown("---")
     st.markdown("### 👷 Minimum Personel Sayıları")
     st.caption("Personel sayınız yeterli değilse vardiya üretimi 'Kapasite yetersiz' hatası verir. Buradan gerçek personel sayınıza göre ayarlayın.")
-    st.caption("ℹ️ Gece vardiyasında bir Market çalışanı varsa, o gece için gereken Pompacı sayısı otomatik olarak 1 azalır (toplam gece kapsamı yine bu sayıya ulaşmış olur).")
 
-    min_pompaci_gece = st.number_input("Gece vardiyasında en az kaç Pompacı? (Market biri varsa 1 eksiği yeterli)", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
+    min_pompaci_gece = st.number_input("Gece vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
     min_pompaci_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gunduz"))
     min_market_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Market çalışanı?", min_value=0, max_value=10, value=get_deger("min_market_gunduz"))
 
@@ -171,8 +170,14 @@ elif menu == "👥 Personel Listesi":
 
 elif menu == "📅 Yeni Vardiya Üret":
     st.title("📅 Vardiya Planlama")
-    secilen_tarih = st.date_input("Haftanın İlk Günü", value=datetime.now())
-    hafta_num = secilen_tarih.isocalendar()[1]
+    secilen_tarih = st.date_input("Bir tarih seç (o tarihin içinde bulunduğu Pazartesi-Pazar haftası üretilir)", value=datetime.now())
+
+    # Seçilen tarih hangi gün olursa olsun, her zaman o haftanın Pazartesi'sinden başlat
+    pazartesi = secilen_tarih - timedelta(days=secilen_tarih.weekday())
+    pazar = pazartesi + timedelta(days=6)
+    hafta_num = pazartesi.isocalendar()[1]
+
+    st.caption(f"🗓️ Üretilecek hafta: **{pazartesi.strftime('%d %B %Y')} (Pazartesi) → {pazar.strftime('%d %B %Y')} (Pazar)** — Hafta {hafta_num}")
 
     if st.button("🚀 ÜRET"):
         baglanti = sqlite3.connect('vardiya_sistemi.db')
@@ -203,7 +208,6 @@ elif menu == "📅 Yeni Vardiya Üret":
         min_market_gunduz = get_deger("min_market_gunduz")
 
         # --- Kapasite ön-kontrolü: gerçek personel yetersizliğini kullanıcıya açıkla ---
-        # Not: Gece'de market biri sayılabildiği için bu sadece yaklaşık bir uyarıdır.
         market_gece_ihtiyaci = 1 if k_gece_market else 0
         gunluk_pompa_ihtiyaci = min_pompaci_gece + (min_pompaci_gunduz * 2)  # gece + sabah + akşam
         gunluk_market_ihtiyaci = market_gece_ihtiyaci + (min_market_gunduz * 2)  # gece(opsiyonel) + sabah + akşam
@@ -212,14 +216,14 @@ elif menu == "📅 Yeni Vardiya Üret":
 
         uyarilar = []
         if len(pompacilar) < gereken_pompaci:
-            uyarilar.append(f"En az **{gereken_pompaci}** Pompacı gerekiyor, mevcut: {len(pompacilar)}. (Kural Ayarları'ndan min. sayıları düşürebilirsin. Not: gece vardiyasında market biri varsa bu sayı 1 azalabilir.)")
+            uyarilar.append(f"En az **{gereken_pompaci}** Pompacı gerekiyor, mevcut: {len(pompacilar)}. (Kural Ayarları'ndan min. sayıları düşürebilirsin.)")
         if len(marketciler) < gereken_market:
             uyarilar.append(f"En az **{gereken_market}** Market çalışanı gerekiyor, mevcut: {len(marketciler)}. (Kural Ayarları'ndan min. sayıları düşürebilirsin.)")
         for w in uyarilar:
             st.warning(w)
 
-        # Günlük tarih string'lerini önceden hesapla
-        gun_tarihleri = [(secilen_tarih + timedelta(days=g)).strftime('%Y-%m-%d') for g in range(7)]
+        # Günlük tarih string'lerini önceden hesapla (Pazartesi'den Pazar'a, g=0 -> Pazartesi, g=6 -> Pazar)
+        gun_tarihleri = [(pazartesi + timedelta(days=g)).strftime('%Y-%m-%d') for g in range(7)]
 
         model = cp_model.CpModel()
         mesailer = {}
@@ -243,18 +247,8 @@ elif menu == "📅 Yeni Vardiya Üret":
                 model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
 
         for g in range(7):
-            # --- GECE VARDİYASI KURALI ---
-            # Gece'de bir Market çalışanı varsa, o çalışan Pompacı eksikliğinin
-            # yerine geçebiliyor kabul edilir: toplam gece kapsamı (Pompacı + Market)
-            # min_pompaci_gece sayısına ulaşmalı. Yani market biri varsa 1 pompacı
-            # yeterli olur, hiç market yoksa yine min_pompaci_gece kadar pompacı gerekir.
-            gece_pompa_toplam = sum(mesailer[(p, g, 0)] for p in pompacilar)
-            gece_market_toplam = sum(mesailer[(m, g, 0)] for m in marketciler)
-            model.Add(gece_pompa_toplam + gece_market_toplam >= min_pompaci_gece)
-            # Yakıt pompalama için gece en az 1 Pompacı her zaman bulunsun (personel varsa).
-            if pompacilar:
-                model.Add(gece_pompa_toplam >= 1)
-            if k_gece_market: model.Add(gece_market_toplam >= 1)
+            model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) >= min_pompaci_gece)
+            if k_gece_market: model.Add(sum(mesailer[(m, g, 0)] for m in marketciler) >= 1)
             for v in [1, 2]:
                 model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= min_market_gunduz)
                 model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= min_pompaci_gunduz)
@@ -277,33 +271,24 @@ elif menu == "📅 Yeni Vardiya Üret":
         solver = cp_model.CpSolver()
         durum = solver.Solve(model)
         if durum in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            st.markdown(
-                "<div class='legend-box'>🔵 <span class='pompa'>Pompacı</span> &nbsp;&nbsp; "
-                "🟠 <span class='market'>Market</span> &nbsp;&nbsp; "
-                "<span class='izinli pompa'>Soluk/üstü çizili</span> = O gün İzinli/Boşta</div>",
-                unsafe_allow_html=True
-            )
-            html = "<table class='shift-table'><tr><th>Gün</th><th>Gece</th><th>Sabah</th><th>Akşam</th><th>İzinliler / Boştakiler</th></tr>"
+            html = "<table class='shift-table'><tr><th>Gün</th><th>Gece</th><th>Sabah</th><th>Akşam</th><th>İzinliler</th></tr>"
             kayitlar = []
             for g in range(7):
-                tarih = secilen_tarih + timedelta(days=g)
-                html += f"<tr><td>{tarih.strftime('%d %b')}</td>"
+                tarih = pazartesi + timedelta(days=g)
+                html += f"<tr><td><b>{GUN_ISIMLERI[g]}</b><br>{tarih.strftime('%d %b')}</td>"
                 gunluk_calisanlar = []
                 for v in range(3):
                     html += "<td>"
                     for p in tum:
                         if solver.Value(mesailer[(p, g, v)]):
                             cls = "pompa" if p in pompacilar else "market"
-                            rol_kisa = "P" if p in pompacilar else "M"
-                            html += f"<span class='{cls}'>{p_sozluk[p]['ad'].split()[0]}</span><span class='rol-tag rol-tag-{cls}'>{rol_kisa}</span><br>"
+                            html += f"<span class='{cls}'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
                             gunluk_calisanlar.append(p)
                             kayitlar.append((p, tarih.strftime('%Y-%m-%d'), hafta_num, ['Gece', 'Sabah', 'Akşam'][v]))
                     html += "</td>"
                 html += "<td>"
                 for p in tum:
-                    if p not in gunluk_calisanlar:
-                        cls = "pompa" if p in pompacilar else "market"
-                        html += f"<span class='{cls} izinli'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
+                    if p not in gunluk_calisanlar: html += f"<span class='izinli'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
                 html += "</td></tr>"
             st.markdown(html + "</table>", unsafe_allow_html=True)
 
