@@ -35,6 +35,7 @@ def veritabanini_hazirla():
         ("gecen_hafta_gece_kisiti", 1),
         ("market_haftasonu_calisir", 1),
         ("sabit_vardiya_tipi", 0),    # personel aynı hafta içinde hep aynı vardiya tipinde mi çalışsın
+        ("aksam_sonrasi_dinlenme", 1),  # akşam vardiyasından sonra ertesi gün gece/sabah vardiyası yasak mı
         ("min_pompaci_gece", 2),      # gece vardiyasında en az kaç pompacı
         ("min_pompaci_gunduz", 2),    # sabah/akşam vardiyasında en az kaç pompacı
         ("min_market_gunduz", 1),     # sabah/akşam vardiyasında en az kaç market
@@ -175,7 +176,7 @@ elif menu == "🗂️ Geçmiş Vardiyalar":
 
 elif menu == "⚙️ Kural Ayarları":
     st.title("⚙️ Kural Ayarları")
-    kural_map = {"gece_market_zorunlu": "Gece vardiyasında mutlaka 1 Market çalışanı olsun", "gecen_hafta_gece_kisiti": "Geçen hafta gece çalışan bu hafta gece çalışamasın", "market_haftasonu_calisir": "Market çalışanları hafta sonu da çalışsın", "sabit_vardiya_tipi": "Personel, hafta içinde hep aynı vardiya tipinde çalışsın (Gece/Sabah/Akşam karışmasın)"}
+    kural_map = {"gece_market_zorunlu": "Gece vardiyasında mutlaka 1 Market çalışanı olsun", "gecen_hafta_gece_kisiti": "Geçen hafta gece çalışan bu hafta gece çalışamasın", "market_haftasonu_calisir": "Market çalışanları hafta sonu da çalışsın", "sabit_vardiya_tipi": "Personel, hafta içinde hep aynı vardiya tipinde çalışsın (Gece/Sabah/Akşam karışmasın)", "aksam_sonrasi_dinlenme": "Akşam vardiyasından sonra ertesi gün Gece/Sabah vardiyasına yazılmasın (yeterli dinlenme için)"}
     baglanti = sqlite3.connect('vardiya_sistemi.db')
     for key, label in kural_map.items():
         durum = get_kural(key)
@@ -239,6 +240,12 @@ elif menu == "📅 Yeni Vardiya Üret":
 
         cur.execute("SELECT DISTINCT personel_id FROM VardiyaKayitlari WHERE hafta_numarasi = ? AND vardiya_tipi = 'Gece'", (hafta_num - 1,))
         gececiler = [row[0] for row in cur.fetchall()]
+
+        # Bir önceki haftanın Pazar günü Akşam vardiyasında çalışanlar
+        # (bu haftanın Pazartesi Gece/Sabah vardiyasına yazılmamalı - yeterli dinlenme için)
+        onceki_pazar = (pazartesi - timedelta(days=1)).strftime('%Y-%m-%d')
+        cur.execute("SELECT DISTINCT personel_id FROM VardiyaKayitlari WHERE tarih = ? AND vardiya_tipi = 'Akşam'", (onceki_pazar,))
+        onceki_aksamcilar = [row[0] for row in cur.fetchall()]
         baglanti.close()
 
         tum = pompacilar + marketciler
@@ -246,6 +253,7 @@ elif menu == "📅 Yeni Vardiya Üret":
         k_gece_kisit = get_kural("gecen_hafta_gece_kisiti")
         k_mkt_haftasonu = get_kural("market_haftasonu_calisir")
         k_sabit_vardiya = get_kural("sabit_vardiya_tipi")
+        k_aksam_dinlenme = get_kural("aksam_sonrasi_dinlenme")
 
         # Ayarlanabilir minimum personel sayıları (Kural Ayarları sayfasından değiştirilebilir)
         min_pompaci_gece = get_deger("min_pompaci_gece")
@@ -325,6 +333,19 @@ elif menu == "📅 Yeni Vardiya Üret":
                     model.Add(sum(gunluk_degiskenler) == 0).OnlyEnforceIf(var.Not())
                     tip_kullanildi.append(var)
                 model.Add(sum(tip_kullanildi) <= 1)
+
+        if k_aksam_dinlenme:
+            # Akşam vardiyası biten kişi, ertesi gün Gece ya da Sabah vardiyasına yazılamaz
+            # (eve gidip kısa süre sonra tekrar işe gelmek yeterli dinlenme sağlamaz).
+            for p in tum:
+                for g in range(6):
+                    model.Add(mesailer[(p, g, 2)] + mesailer[(p, g + 1, 0)] <= 1)
+                    model.Add(mesailer[(p, g, 2)] + mesailer[(p, g + 1, 1)] <= 1)
+                # Hafta sınırı: geçen haftanın Pazar Akşam vardiyasında çalıştıysa,
+                # bu haftanın Pazartesi Gece/Sabah vardiyasına da yazılamaz.
+                if p in onceki_aksamcilar:
+                    model.Add(mesailer[(p, 0, 0)] == 0)
+                    model.Add(mesailer[(p, 0, 1)] == 0)
 
         solver = cp_model.CpSolver()
         durum = solver.Solve(model)
