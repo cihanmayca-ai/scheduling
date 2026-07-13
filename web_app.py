@@ -20,6 +20,23 @@ st.markdown("""
 
 GUN_ISIMLERI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
 VARDIYA_TIPLERI = ['Gece', 'Sabah', 'Akşam']
+# Veritabanında ve iç mantıkta kısa isimler (Gece/Sabah/Akşam) kullanılmaya devam eder,
+# bu sözlük sadece ekranda gösterilen etiketleri saat aralıklarıyla birlikte gösterir.
+VARDIYA_GORUNEN_ISIM = {
+    'Gece': 'Gece (00:00 - 08:00)',
+    'Sabah': 'Sabah (08:00 - 16:00)',
+    'Akşam': 'Akşam (16:00 - 00:00)',
+}
+
+_TURKCE_AYLAR_UZUN = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran',
+                       7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
+_TURKCE_AYLAR_KISA = {1: 'Oca', 2: 'Şub', 3: 'Mar', 4: 'Nis', 5: 'May', 6: 'Haz',
+                       7: 'Tem', 8: 'Ağu', 9: 'Eyl', 10: 'Eki', 11: 'Kas', 12: 'Ara'}
+
+def tr_tarih(dt, uzun=True):
+    """Sistem locale'inden bağımsız, her zaman Türkçe ay isimleriyle tarih döndürür."""
+    ay = _TURKCE_AYLAR_UZUN[dt.month] if uzun else _TURKCE_AYLAR_KISA[dt.month]
+    return f"{dt.day:02d} {ay} {dt.year}" if uzun else f"{dt.day:02d} {ay}"
 
 # --- Veritabanı ---
 def veritabanini_hazirla():
@@ -107,11 +124,11 @@ elif menu == "🚫 Vardiya Kapatma":
         with st.form("kapatma_form"):
             p_sec = st.selectbox("Personel Seç:", personeller['ad_soyad'].tolist())
             tarih_sec = st.date_input("Haftanın herhangi bir günü (o hafta için geçerli olacak):", value=datetime.now())
-            v_sec = st.selectbox("Kapatılacak Vardiya:", VARDIYA_TIPLERI)
+            v_sec = st.selectbox("Kapatılacak Vardiya:", VARDIYA_TIPLERI, format_func=lambda x: VARDIYA_GORUNEN_ISIM[x])
 
             pazartesi_onizleme = tarih_sec - timedelta(days=tarih_sec.weekday())
             pazar_onizleme = pazartesi_onizleme + timedelta(days=6)
-            st.caption(f"🗓️ Bu hafta: **{pazartesi_onizleme.strftime('%d %B %Y')} → {pazar_onizleme.strftime('%d %B %Y')}**")
+            st.caption(f"🗓️ Bu hafta: **{tr_tarih(pazartesi_onizleme)} → {tr_tarih(pazar_onizleme)}**")
 
             if st.form_submit_button("🚫 Kapat"):
                 p_id = int(personeller[personeller['ad_soyad'] == p_sec]['id'].values[0])
@@ -121,14 +138,14 @@ elif menu == "🚫 Vardiya Kapatma":
                     (p_id, hafta_baslangic, v_sec)
                 ).fetchone()
                 if mevcut:
-                    st.warning(f"{p_sec} için bu hafta {v_sec} vardiyası zaten kapalı.")
+                    st.warning(f"{p_sec} için bu hafta {VARDIYA_GORUNEN_ISIM[v_sec]} zaten kapalı.")
                 else:
                     baglanti.execute(
                         "INSERT INTO VardiyaKapatmalari (personel_id, hafta_baslangic, vardiya_tipi) VALUES (?, ?, ?)",
                         (p_id, hafta_baslangic, v_sec)
                     )
                     baglanti.commit()
-                    st.success(f"{p_sec} için {pazartesi_onizleme.strftime('%d %B %Y')} haftası {v_sec} vardiyası kapatıldı.")
+                    st.success(f"{p_sec} için {tr_tarih(pazartesi_onizleme)} haftası {VARDIYA_GORUNEN_ISIM[v_sec]} kapatıldı.")
 
         st.markdown("### Kapatılmış Vardiyalar")
         kapatmalar = pd.read_sql_query(
@@ -145,8 +162,8 @@ elif menu == "🚫 Vardiya Kapatma":
                 hafta_son_dt = hafta_bas_dt + timedelta(days=6)
                 c1, c2 = st.columns([5, 1])
                 c1.markdown(
-                    f"**{row['ad_soyad']}** — {hafta_bas_dt.strftime('%d %b')} → {hafta_son_dt.strftime('%d %b')} "
-                    f"haftası — **{row['vardiya_tipi']}** kapalı"
+                    f"**{row['ad_soyad']}** — {tr_tarih(hafta_bas_dt, uzun=False)} → {tr_tarih(hafta_son_dt, uzun=False)} "
+                    f"haftası — **{VARDIYA_GORUNEN_ISIM[row['vardiya_tipi']]}** kapalı"
                 )
                 if c2.button("Kaldır", key=f"kaldir_{row['id']}"):
                     baglanti.execute("DELETE FROM VardiyaKapatmalari WHERE id=?", (int(row['id']),))
@@ -181,13 +198,14 @@ elif menu == "🧑‍💼 Vardiyalarım":
         else:
             vardiyalar['tarih_dt'] = pd.to_datetime(vardiyalar['tarih'])
             vardiyalar['Gün'] = vardiyalar['tarih_dt'].dt.weekday.map(lambda i: GUN_ISIMLERI[i])
-            vardiyalar['Tarih'] = vardiyalar['tarih_dt'].dt.strftime('%d %B %Y')
+            vardiyalar['Tarih'] = vardiyalar['tarih_dt'].apply(lambda d: tr_tarih(d))
+            vardiyalar['Vardiya'] = vardiyalar['vardiya_tipi'].map(VARDIYA_GORUNEN_ISIM)
 
             for hafta, grup in vardiyalar.sort_values('tarih_dt').groupby('hafta_numarasi', sort=False):
-                ilk_gun = grup['tarih_dt'].min().strftime('%d %b')
-                son_gun = grup['tarih_dt'].max().strftime('%d %b')
+                ilk_gun = tr_tarih(grup['tarih_dt'].min(), uzun=False)
+                son_gun = tr_tarih(grup['tarih_dt'].max(), uzun=False)
                 st.markdown(f"#### 🗓️ Hafta {hafta} ({ilk_gun} - {son_gun})")
-                gosterim = grup[['Tarih', 'Gün', 'vardiya_tipi']].rename(columns={'vardiya_tipi': 'Vardiya'})
+                gosterim = grup[['Tarih', 'Gün', 'Vardiya']]
                 st.dataframe(gosterim, use_container_width=True, hide_index=True)
 
         if not izinler.empty:
@@ -221,14 +239,17 @@ elif menu == "🗂️ Geçmiş Vardiyalar":
             kayitlar['tarih_dt'] = pd.to_datetime(kayitlar['tarih'])
             gunler = sorted(kayitlar['tarih_dt'].unique())
             ilk_gun, son_gun = pd.Timestamp(gunler[0]), pd.Timestamp(gunler[-1])
-            st.caption(f"🗓️ {ilk_gun.strftime('%d %B %Y')} (Pazartesi) → {son_gun.strftime('%d %B %Y')} (Pazar)")
+            st.caption(f"🗓️ {tr_tarih(ilk_gun)} (Pazartesi) → {tr_tarih(son_gun)} (Pazar)")
 
-            html = "<table class='shift-table'><tr><th>Gün</th><th>Gece</th><th>Sabah</th><th>Akşam</th></tr>"
+            html = (f"<table class='shift-table'><tr><th>Gün</th>"
+                    f"<th>{VARDIYA_GORUNEN_ISIM['Gece']}</th>"
+                    f"<th>{VARDIYA_GORUNEN_ISIM['Sabah']}</th>"
+                    f"<th>{VARDIYA_GORUNEN_ISIM['Akşam']}</th></tr>")
             for g in gunler:
                 g_ts = pd.Timestamp(g)
                 gun_adi = GUN_ISIMLERI[g_ts.weekday()]
-                html += f"<tr><td><b>{gun_adi}</b><br>{g_ts.strftime('%d %b')}</td>"
-                for v_tipi in ['Gece', 'Sabah', 'Akşam']:
+                html += f"<tr><td><b>{gun_adi}</b><br>{tr_tarih(g_ts, uzun=False)}</td>"
+                for v_tipi in VARDIYA_TIPLERI:
                     html += "<td>"
                     gunluk = kayitlar[(kayitlar['tarih_dt'] == g_ts) & (kayitlar['vardiya_tipi'] == v_tipi)]
                     for _, row in gunluk.iterrows():
@@ -241,7 +262,7 @@ elif menu == "🗂️ Geçmiş Vardiyalar":
 
 elif menu == "⚙️ Kural Ayarları":
     st.title("⚙️ Kural Ayarları")
-    kural_map = {"gece_market_zorunlu": "Gece vardiyasında mutlaka 1 Market çalışanı olsun", "gecen_hafta_gece_kisiti": "Geçen hafta gece çalışan bu hafta gece çalışamasın", "market_haftasonu_calisir": "Market çalışanları hafta sonu da çalışsın", "sabit_vardiya_tipi": "Personel, hafta içinde hep aynı vardiya tipinde çalışsın (Gece/Sabah/Akşam karışmasın)", "aksam_sonrasi_dinlenme": "Akşam vardiyasından sonra ertesi gün Gece/Sabah vardiyasına yazılmasın (yeterli dinlenme için)"}
+    kural_map = {"gece_market_zorunlu": "Gece (00:00 - 08:00) vardiyasında mutlaka 1 Market çalışanı olsun", "gecen_hafta_gece_kisiti": "Geçen hafta gece çalışan bu hafta gece çalışamasın", "market_haftasonu_calisir": "Market çalışanları hafta sonu da çalışsın", "sabit_vardiya_tipi": "Personel, hafta içinde hep aynı vardiya tipinde çalışsın (Gece/Sabah/Akşam karışmasın)", "aksam_sonrasi_dinlenme": "Akşam (16:00 - 00:00) vardiyasından sonra ertesi gün Gece/Sabah vardiyasına yazılmasın (yeterli dinlenme için)"}
     baglanti = sqlite3.connect('vardiya_sistemi.db')
     for key, label in kural_map.items():
         durum = get_kural(key)
@@ -254,9 +275,9 @@ elif menu == "⚙️ Kural Ayarları":
     st.markdown("### 👷 Minimum Personel Sayıları")
     st.caption("Personel sayınız yeterli değilse vardiya üretimi 'Kapasite yetersiz' hatası verir. Buradan gerçek personel sayınıza göre ayarlayın.")
 
-    min_pompaci_gece = st.number_input("Gece vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
-    min_pompaci_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gunduz"))
-    min_market_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Market çalışanı?", min_value=0, max_value=10, value=get_deger("min_market_gunduz"))
+    min_pompaci_gece = st.number_input("Gece (00:00 - 08:00) vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
+    min_pompaci_gunduz = st.number_input("Sabah (08:00-16:00) / Akşam (16:00-00:00) vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gunduz"))
+    min_market_gunduz = st.number_input("Sabah (08:00-16:00) / Akşam (16:00-00:00) vardiyasında en az kaç Market çalışanı?", min_value=0, max_value=10, value=get_deger("min_market_gunduz"))
     maks_market_vardiya = st.number_input("Herhangi bir vardiyada en fazla kaç Market çalışanı olabilir?", min_value=1, max_value=10, value=get_deger("maks_market_vardiya"))
     st.caption("Bu sayıyı düşürmek (örn. 1), fazla market çalışanlarının gece vardiyasına da kaydırılabilmesini sağlar.")
 
@@ -290,7 +311,7 @@ elif menu == "📅 Yeni Vardiya Üret":
     pazar = pazartesi + timedelta(days=6)
     hafta_num = pazartesi.isocalendar()[1]
 
-    st.caption(f"🗓️ Üretilecek hafta: **{pazartesi.strftime('%d %B %Y')} (Pazartesi) → {pazar.strftime('%d %B %Y')} (Pazar)** — Hafta {hafta_num}")
+    st.caption(f"🗓️ Üretilecek hafta: **{tr_tarih(pazartesi)} (Pazartesi) → {tr_tarih(pazar)} (Pazar)** — Hafta {hafta_num}")
 
     if st.button("🚀 ÜRET"):
         baglanti = sqlite3.connect('vardiya_sistemi.db')
