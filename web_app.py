@@ -19,6 +19,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 GUN_ISIMLERI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
+VARDIYA_TIPLERI = ['Gece', 'Sabah', 'Akşam']
 
 # --- Veritabanı ---
 def veritabanini_hazirla():
@@ -28,6 +29,7 @@ def veritabanini_hazirla():
     cursor.execute('''CREATE TABLE IF NOT EXISTS VardiyaKayitlari (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, tarih TEXT, hafta_numarasi INTEGER, vardiya_tipi TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS Ayarlar (kural_key TEXT PRIMARY KEY, aktif_mi INTEGER)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS Izinler (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, tarih TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS VardiyaKapatmalari (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, hafta_baslangic TEXT, vardiya_tipi TEXT)''')
 
     # Varsayılan Kurallar (0/1 anahtar-kapalı kurallar + min personel sayıları)
     varsayilanlar = [
@@ -68,7 +70,7 @@ def set_deger(kural_key, deger):
 
 # --- Arayüz ---
 st.sidebar.title("⛽ Benzinlik Yönetimi")
-menu = st.sidebar.radio("Menü", ["📅 Yeni Vardiya Üret", "🧑‍💼 Vardiyalarım", "🏖️ İzin Planlama", "⚙️ Kural Ayarları", "🗂️ Geçmiş Vardiyalar", "👥 Personel Listesi"])
+menu = st.sidebar.radio("Menü", ["📅 Yeni Vardiya Üret", "🧑‍💼 Vardiyalarım", "🏖️ İzin Planlama", "🚫 Vardiya Kapatma", "⚙️ Kural Ayarları", "🗂️ Geçmiş Vardiyalar", "👥 Personel Listesi"])
 
 if menu == "🏖️ İzin Planlama":
     st.title("🏖️ İzin Planlama")
@@ -88,6 +90,68 @@ if menu == "🏖️ İzin Planlama":
     izinler = pd.read_sql_query("SELECT p.ad_soyad, i.tarih FROM Izinler i JOIN Personeller p ON i.personel_id = p.id", baglanti)
     st.dataframe(izinler)
     baglanti.close()
+
+elif menu == "🚫 Vardiya Kapatma":
+    st.title("🚫 Vardiya Kapatma")
+    st.caption("Bir personelin belirli bir haftada SADECE belirli bir vardiya tipinde (örn. Gece) çalışmasını engelle. "
+               "Personel o hafta diğer vardiya tiplerinde normal şekilde planlanmaya devam eder.")
+
+    baglanti = sqlite3.connect('vardiya_sistemi.db')
+    personeller = pd.read_sql_query("SELECT id, ad_soyad FROM Personeller WHERE aktif_mi=1", baglanti)
+
+    if personeller.empty:
+        st.info("Henüz personel eklenmemiş.")
+        baglanti.close()
+    else:
+        with st.form("kapatma_form"):
+            p_sec = st.selectbox("Personel Seç:", personeller['ad_soyad'].tolist())
+            tarih_sec = st.date_input("Haftanın herhangi bir günü (o hafta için geçerli olacak):", value=datetime.now())
+            v_sec = st.selectbox("Kapatılacak Vardiya:", VARDIYA_TIPLERI)
+
+            pazartesi_onizleme = tarih_sec - timedelta(days=tarih_sec.weekday())
+            pazar_onizleme = pazartesi_onizleme + timedelta(days=6)
+            st.caption(f"🗓️ Bu hafta: **{pazartesi_onizleme.strftime('%d %B %Y')} → {pazar_onizleme.strftime('%d %B %Y')}**")
+
+            if st.form_submit_button("🚫 Kapat"):
+                p_id = int(personeller[personeller['ad_soyad'] == p_sec]['id'].values[0])
+                hafta_baslangic = pazartesi_onizleme.strftime('%Y-%m-%d')
+                mevcut = baglanti.execute(
+                    "SELECT id FROM VardiyaKapatmalari WHERE personel_id=? AND hafta_baslangic=? AND vardiya_tipi=?",
+                    (p_id, hafta_baslangic, v_sec)
+                ).fetchone()
+                if mevcut:
+                    st.warning(f"{p_sec} için bu hafta {v_sec} vardiyası zaten kapalı.")
+                else:
+                    baglanti.execute(
+                        "INSERT INTO VardiyaKapatmalari (personel_id, hafta_baslangic, vardiya_tipi) VALUES (?, ?, ?)",
+                        (p_id, hafta_baslangic, v_sec)
+                    )
+                    baglanti.commit()
+                    st.success(f"{p_sec} için {pazartesi_onizleme.strftime('%d %B %Y')} haftası {v_sec} vardiyası kapatıldı.")
+
+        st.markdown("### Kapatılmış Vardiyalar")
+        kapatmalar = pd.read_sql_query(
+            "SELECT k.id, p.ad_soyad, k.hafta_baslangic, k.vardiya_tipi FROM VardiyaKapatmalari k "
+            "JOIN Personeller p ON k.personel_id = p.id ORDER BY k.hafta_baslangic DESC",
+            baglanti
+        )
+
+        if kapatmalar.empty:
+            st.info("Henüz kapatılmış bir vardiya yok.")
+        else:
+            for _, row in kapatmalar.iterrows():
+                hafta_bas_dt = datetime.strptime(row['hafta_baslangic'], '%Y-%m-%d')
+                hafta_son_dt = hafta_bas_dt + timedelta(days=6)
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(
+                    f"**{row['ad_soyad']}** — {hafta_bas_dt.strftime('%d %b')} → {hafta_son_dt.strftime('%d %b')} "
+                    f"haftası — **{row['vardiya_tipi']}** kapalı"
+                )
+                if c2.button("Kaldır", key=f"kaldir_{row['id']}"):
+                    baglanti.execute("DELETE FROM VardiyaKapatmalari WHERE id=?", (int(row['id']),))
+                    baglanti.commit()
+                    st.rerun()
+        baglanti.close()
 
 elif menu == "🧑‍💼 Vardiyalarım":
     st.title("🧑‍💼 Kendi Vardiyalarım")
@@ -246,6 +310,11 @@ elif menu == "📅 Yeni Vardiya Üret":
         onceki_pazar = (pazartesi - timedelta(days=1)).strftime('%Y-%m-%d')
         cur.execute("SELECT DISTINCT personel_id FROM VardiyaKayitlari WHERE tarih = ? AND vardiya_tipi = 'Akşam'", (onceki_pazar,))
         onceki_aksamcilar = [row[0] for row in cur.fetchall()]
+
+        # Bu hafta için manuel olarak kapatılmış (personel, vardiya tipi) kombinasyonları
+        pazartesi_str = pazartesi.strftime('%Y-%m-%d')
+        cur.execute("SELECT personel_id, vardiya_tipi FROM VardiyaKapatmalari WHERE hafta_baslangic = ?", (pazartesi_str,))
+        kapali_set = {(row[0], row[1]) for row in cur.fetchall()}
         baglanti.close()
 
         tum = pompacilar + marketciler
@@ -287,6 +356,9 @@ elif menu == "📅 Yeni Vardiya Üret":
                     mesailer[(p, g, v)] = model.NewBoolVar(f'm_{p}_{g}_{v}')
                     # İzinli günü ise çalışamaz
                     if (p, tarih_str) in izin_set:
+                        model.Add(mesailer[(p, g, v)] == 0)
+                    # Bu vardiya tipi bu hafta için manuel olarak kapatılmışsa çalışamaz
+                    if (p, VARDIYA_TIPLERI[v]) in kapali_set:
                         model.Add(mesailer[(p, g, v)] == 0)
 
         for p in tum:
