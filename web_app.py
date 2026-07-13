@@ -27,8 +27,15 @@ def veritabanini_hazirla():
     cursor.execute('''CREATE TABLE IF NOT EXISTS Ayarlar (kural_key TEXT PRIMARY KEY, aktif_mi INTEGER)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS Izinler (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, tarih TEXT)''')
 
-    # Varsayılan Kurallar
-    varsayilanlar = [("gece_market_zorunlu", 0), ("gecen_hafta_gece_kisiti", 1), ("market_haftasonu_calisir", 1)]
+    # Varsayılan Kurallar (0/1 anahtar-kapalı kurallar + min personel sayıları)
+    varsayilanlar = [
+        ("gece_market_zorunlu", 0),
+        ("gecen_hafta_gece_kisiti", 1),
+        ("market_haftasonu_calisir", 1),
+        ("min_pompaci_gece", 2),      # gece vardiyasında en az kaç pompacı
+        ("min_pompaci_gunduz", 2),    # sabah/akşam vardiyasında en az kaç pompacı
+        ("min_market_gunduz", 1),     # sabah/akşam vardiyasında en az kaç market
+    ]
     for k, v in varsayilanlar: cursor.execute("INSERT OR IGNORE INTO Ayarlar VALUES (?, ?)", (k, v))
     baglanti.commit()
     baglanti.close()
@@ -36,10 +43,24 @@ def veritabanini_hazirla():
 veritabanini_hazirla()
 
 def get_kural(kural_key):
+    """Açık/kapalı (0/1) kurallar için boolean döner."""
     baglanti = sqlite3.connect('vardiya_sistemi.db')
     val = baglanti.execute("SELECT aktif_mi FROM Ayarlar WHERE kural_key=?", (kural_key,)).fetchone()[0]
     baglanti.close()
     return val == 1
+
+def get_deger(kural_key):
+    """Min personel sayısı gibi tam sayı değer döndüren ayarlar için."""
+    baglanti = sqlite3.connect('vardiya_sistemi.db')
+    val = baglanti.execute("SELECT aktif_mi FROM Ayarlar WHERE kural_key=?", (kural_key,)).fetchone()[0]
+    baglanti.close()
+    return int(val)
+
+def set_deger(kural_key, deger):
+    baglanti = sqlite3.connect('vardiya_sistemi.db')
+    baglanti.execute("UPDATE Ayarlar SET aktif_mi=? WHERE kural_key=?", (int(deger), kural_key))
+    baglanti.commit()
+    baglanti.close()
 
 # --- Arayüz ---
 st.sidebar.title("⛽ Benzinlik Yönetimi")
@@ -74,6 +95,20 @@ elif menu == "⚙️ Kural Ayarları":
         else: baglanti.execute("UPDATE Ayarlar SET aktif_mi=0 WHERE kural_key=?", (key,))
     baglanti.commit()
     baglanti.close()
+
+    st.markdown("---")
+    st.markdown("### 👷 Minimum Personel Sayıları")
+    st.caption("Personel sayınız yeterli değilse vardiya üretimi 'Kapasite yetersiz' hatası verir. Buradan gerçek personel sayınıza göre ayarlayın.")
+
+    min_pompaci_gece = st.number_input("Gece vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gece"))
+    min_pompaci_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Pompacı?", min_value=0, max_value=10, value=get_deger("min_pompaci_gunduz"))
+    min_market_gunduz = st.number_input("Sabah/Akşam vardiyasında en az kaç Market çalışanı?", min_value=0, max_value=10, value=get_deger("min_market_gunduz"))
+
+    if st.button("Min Personel Ayarlarını Kaydet"):
+        set_deger("min_pompaci_gece", min_pompaci_gece)
+        set_deger("min_pompaci_gunduz", min_pompaci_gunduz)
+        set_deger("min_market_gunduz", min_market_gunduz)
+        st.success("Kaydedildi!")
 
 elif menu == "👥 Personel Listesi":
     st.title("👥 Personel")
@@ -117,18 +152,23 @@ elif menu == "📅 Yeni Vardiya Üret":
         k_gece_kisit = get_kural("gecen_hafta_gece_kisiti")
         k_mkt_haftasonu = get_kural("market_haftasonu_calisir")
 
+        # Ayarlanabilir minimum personel sayıları (Kural Ayarları sayfasından değiştirilebilir)
+        min_pompaci_gece = get_deger("min_pompaci_gece")
+        min_pompaci_gunduz = get_deger("min_pompaci_gunduz")
+        min_market_gunduz = get_deger("min_market_gunduz")
+
         # --- Kapasite ön-kontrolü: gerçek personel yetersizliğini kullanıcıya açıkla ---
         market_gece_ihtiyaci = 1 if k_gece_market else 0
-        gunluk_pompa_ihtiyaci = 2 + 2 + 2  # gece + sabah + akşam
-        gunluk_market_ihtiyaci = market_gece_ihtiyaci + 1 + 1  # gece(opsiyonel) + sabah + akşam
-        min_pompaci = -(-(gunluk_pompa_ihtiyaci * 7) // 6)   # ceil(42/6)=7
-        min_market = -(-(gunluk_market_ihtiyaci * 7) // 6)   # ceil(14/6)=3 ya da ceil(21/6)=4
+        gunluk_pompa_ihtiyaci = min_pompaci_gece + (min_pompaci_gunduz * 2)  # gece + sabah + akşam
+        gunluk_market_ihtiyaci = market_gece_ihtiyaci + (min_market_gunduz * 2)  # gece(opsiyonel) + sabah + akşam
+        gereken_pompaci = -(-(gunluk_pompa_ihtiyaci * 7) // 6)   # ceil
+        gereken_market = -(-(gunluk_market_ihtiyaci * 7) // 6)   # ceil
 
         uyarilar = []
-        if len(pompacilar) < min_pompaci:
-            uyarilar.append(f"En az **{min_pompaci}** Pompacı gerekiyor, mevcut: {len(pompacilar)}.")
-        if len(marketciler) < min_market:
-            uyarilar.append(f"En az **{min_market}** Market çalışanı gerekiyor, mevcut: {len(marketciler)}.")
+        if len(pompacilar) < gereken_pompaci:
+            uyarilar.append(f"En az **{gereken_pompaci}** Pompacı gerekiyor, mevcut: {len(pompacilar)}. (Kural Ayarları'ndan min. sayıları düşürebilirsin.)")
+        if len(marketciler) < gereken_market:
+            uyarilar.append(f"En az **{gereken_market}** Market çalışanı gerekiyor, mevcut: {len(marketciler)}. (Kural Ayarları'ndan min. sayıları düşürebilirsin.)")
         for w in uyarilar:
             st.warning(w)
 
@@ -157,11 +197,11 @@ elif menu == "📅 Yeni Vardiya Üret":
                 model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
 
         for g in range(7):
-            model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) >= 2)
+            model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) >= min_pompaci_gece)
             if k_gece_market: model.Add(sum(mesailer[(m, g, 0)] for m in marketciler) >= 1)
             for v in [1, 2]:
-                model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= 1)
-                model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= 2)
+                model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= min_market_gunduz)
+                model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= min_pompaci_gunduz)
 
         if k_mkt_haftasonu:
             for m in marketciler:
