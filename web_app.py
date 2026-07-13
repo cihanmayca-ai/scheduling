@@ -167,7 +167,7 @@ elif menu == "🗂️ Geçmiş Vardiyalar":
                     gunluk = kayitlar[(kayitlar['tarih_dt'] == g_ts) & (kayitlar['vardiya_tipi'] == v_tipi)]
                     for _, row in gunluk.iterrows():
                         cls = "pompa" if row['rol'] == 'Pompacı' else "market"
-                        html += f"<span class='{cls}'>{row['ad_soyad'].split()[0]}</span><br>"
+                        html += f"<span class='{cls}'>{row['ad_soyad']}</span><br>"
                     html += "</td>"
                 html += "</tr>"
             html += "</table>"
@@ -340,13 +340,13 @@ elif menu == "📅 Yeni Vardiya Üret":
                     for p in tum:
                         if solver.Value(mesailer[(p, g, v)]):
                             cls = "pompa" if p in pompacilar else "market"
-                            html += f"<span class='{cls}'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
+                            html += f"<span class='{cls}'>{p_sozluk[p]['ad']}</span><br>"
                             gunluk_calisanlar.append(p)
                             kayitlar.append((p, tarih.strftime('%Y-%m-%d'), hafta_num, ['Gece', 'Sabah', 'Akşam'][v]))
                     html += "</td>"
                 html += "<td>"
                 for p in tum:
-                    if p not in gunluk_calisanlar: html += f"<span class='izinli'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
+                    if p not in gunluk_calisanlar: html += f"<span class='izinli'>{p_sozluk[p]['ad']}</span><br>"
                 html += "</td></tr>"
             st.markdown(html + "</table>", unsafe_allow_html=True)
 
