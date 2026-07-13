@@ -26,7 +26,7 @@ def veritabanini_hazirla():
     cursor.execute('''CREATE TABLE IF NOT EXISTS VardiyaKayitlari (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, tarih TEXT, hafta_numarasi INTEGER, vardiya_tipi TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS Ayarlar (kural_key TEXT PRIMARY KEY, aktif_mi INTEGER)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS Izinler (id INTEGER PRIMARY KEY AUTOINCREMENT, personel_id INTEGER, tarih TEXT)''')
-    
+
     # Varsayılan Kurallar
     varsayilanlar = [("gece_market_zorunlu", 0), ("gecen_hafta_gece_kisiti", 1), ("market_haftasonu_calisir", 1)]
     for k, v in varsayilanlar: cursor.execute("INSERT OR IGNORE INTO Ayarlar VALUES (?, ?)", (k, v))
@@ -49,7 +49,7 @@ if menu == "🏖️ İzin Planlama":
     st.title("🏖️ İzin Planlama")
     baglanti = sqlite3.connect('vardiya_sistemi.db')
     personeller = pd.read_sql_query("SELECT id, ad_soyad FROM Personeller WHERE aktif_mi=1", baglanti)
-    
+
     with st.form("izin_form"):
         p_sec = st.selectbox("Personel Seç:", personeller['ad_soyad'].tolist())
         tarih_sec = st.date_input("İzin Günü:")
@@ -58,7 +58,7 @@ if menu == "🏖️ İzin Planlama":
             baglanti.execute("INSERT INTO Izinler (personel_id, tarih) VALUES (?, ?)", (int(p_id), tarih_sec.strftime('%Y-%m-%d')))
             baglanti.commit()
             st.success(f"{p_sec} için {tarih_sec} tarihi izinli olarak kaydedildi.")
-    
+
     st.markdown("### Kayıtlı İzinler")
     izinler = pd.read_sql_query("SELECT p.ad_soyad, i.tarih FROM Izinler i JOIN Personeller p ON i.personel_id = p.id", baglanti)
     st.dataframe(izinler)
@@ -93,7 +93,7 @@ elif menu == "📅 Yeni Vardiya Üret":
     st.title("📅 Vardiya Planlama")
     secilen_tarih = st.date_input("Haftanın İlk Günü", value=datetime.now())
     hafta_num = secilen_tarih.isocalendar()[1]
-    
+
     if st.button("🚀 ÜRET"):
         baglanti = sqlite3.connect('vardiya_sistemi.db')
         cur = baglanti.cursor()
@@ -103,32 +103,58 @@ elif menu == "📅 Yeni Vardiya Üret":
             p_sozluk[pid] = {'ad': ad, 'rol': rol}
             if rol == 'Pompacı': pompacilar.append(pid)
             else: marketciler.append(pid)
-        
-        # İzinleri Çek
+
+        # İzinleri Çek (set olarak - hızlı arama için)
         izin_listesi = cur.execute("SELECT personel_id, tarih FROM Izinler").fetchall()
+        izin_set = {(row[0], row[1]) for row in izin_listesi}
+
         cur.execute("SELECT DISTINCT personel_id FROM VardiyaKayitlari WHERE hafta_numarasi = ? AND vardiya_tipi = 'Gece'", (hafta_num - 1,))
         gececiler = [row[0] for row in cur.fetchall()]
         baglanti.close()
-        
+
         tum = pompacilar + marketciler
         k_gece_market = get_kural("gece_market_zorunlu")
         k_gece_kisit = get_kural("gecen_hafta_gece_kisiti")
         k_mkt_haftasonu = get_kural("market_haftasonu_calisir")
 
+        # --- Kapasite ön-kontrolü: gerçek personel yetersizliğini kullanıcıya açıkla ---
+        market_gece_ihtiyaci = 1 if k_gece_market else 0
+        gunluk_pompa_ihtiyaci = 2 + 2 + 2  # gece + sabah + akşam
+        gunluk_market_ihtiyaci = market_gece_ihtiyaci + 1 + 1  # gece(opsiyonel) + sabah + akşam
+        min_pompaci = -(-(gunluk_pompa_ihtiyaci * 7) // 6)   # ceil(42/6)=7
+        min_market = -(-(gunluk_market_ihtiyaci * 7) // 6)   # ceil(14/6)=3 ya da ceil(21/6)=4
+
+        uyarilar = []
+        if len(pompacilar) < min_pompaci:
+            uyarilar.append(f"En az **{min_pompaci}** Pompacı gerekiyor, mevcut: {len(pompacilar)}.")
+        if len(marketciler) < min_market:
+            uyarilar.append(f"En az **{min_market}** Market çalışanı gerekiyor, mevcut: {len(marketciler)}.")
+        for w in uyarilar:
+            st.warning(w)
+
+        # Günlük tarih string'lerini önceden hesapla
+        gun_tarihleri = [(secilen_tarih + timedelta(days=g)).strftime('%Y-%m-%d') for g in range(7)]
+
         model = cp_model.CpModel()
         mesailer = {}
         for p in tum:
             for g in range(7):
-                tarih_str = (secilen_tarih + timedelta(days=g)).strftime('%Y-%m-%d')
-                for v in range(3): 
+                tarih_str = gun_tarihleri[g]
+                for v in range(3):
                     mesailer[(p, g, v)] = model.NewBoolVar(f'm_{p}_{g}_{v}')
                     # İzinli günü ise çalışamaz
-                    if (p, tarih_str) in [(i[0], i[1]) for i in izin_listesi]:
+                    if (p, tarih_str) in izin_set:
                         model.Add(mesailer[(p, g, v)] == 0)
 
         for p in tum:
-            model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == 6)
-            for g in range(7): model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
+            # İzinli gün sayısı kadar haftalık hedef vardiya sayısını düşür.
+            # (Eski kod izinli olsa da olmasa da herkesin tam 6 vardiya çalışmasını
+            #  zorunlu kılıyordu; 2+ izin günü olan biri için bu imkansızdı.)
+            izinli_gun_sayisi = sum(1 for tarih_str in gun_tarihleri if (p, tarih_str) in izin_set)
+            hedef_vardiya = max(0, 6 - izinli_gun_sayisi)
+            model.Add(sum(mesailer[(p, g, v)] for g in range(7) for v in range(3)) == hedef_vardiya)
+            for g in range(7):
+                model.Add(sum(mesailer[(p, g, v)] for v in range(3)) <= 1)
 
         for g in range(7):
             model.Add(sum(mesailer[(p, g, 0)] for p in pompacilar) >= 2)
@@ -136,18 +162,25 @@ elif menu == "📅 Yeni Vardiya Üret":
             for v in [1, 2]:
                 model.Add(sum(mesailer[(m, g, v)] for m in marketciler) >= 1)
                 model.Add(sum(mesailer[(p, g, v)] for p in pompacilar) >= 2)
-        
+
         if k_mkt_haftasonu:
             for m in marketciler:
-                for g in [5, 6]: model.Add(sum(mesailer[(m, g, v)] for v in range(3)) == 1)
-        
+                for g in [5, 6]:
+                    tarih_str = gun_tarihleri[g]
+                    # İzinliyse bu kişiye "tam 1 çalış" zorunluluğu koyma
+                    # (Eski kod bunu izinden bağımsız == 1 yapıyordu, bu da
+                    #  izinli+hafta sonu çakışmasında modeli imkansız kılıyordu.)
+                    if (m, tarih_str) not in izin_set:
+                        model.Add(sum(mesailer[(m, g, v)] for v in range(3)) == 1)
+
         if k_gece_kisit:
             for p in gececiler:
                 if p in tum:
                     for g in range(7): model.Add(mesailer[(p, g, 0)] == 0)
 
         solver = cp_model.CpSolver()
-        if solver.Solve(model) == cp_model.OPTIMAL:
+        durum = solver.Solve(model)
+        if durum in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             html = "<table class='shift-table'><tr><th>Gün</th><th>Gece</th><th>Sabah</th><th>Akşam</th><th>İzinliler</th></tr>"
             kayitlar = []
             for g in range(7):
@@ -161,18 +194,18 @@ elif menu == "📅 Yeni Vardiya Üret":
                             cls = "pompa" if p in pompacilar else "market"
                             html += f"<span class='{cls}'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
                             gunluk_calisanlar.append(p)
-                            kayitlar.append((p, tarih.strftime('%Y-%m-%d'), hafta_num, ['Gece','Sabah','Akşam'][v]))
+                            kayitlar.append((p, tarih.strftime('%Y-%m-%d'), hafta_num, ['Gece', 'Sabah', 'Akşam'][v]))
                     html += "</td>"
                 html += "<td>"
                 for p in tum:
                     if p not in gunluk_calisanlar: html += f"<span class='izinli'>{p_sozluk[p]['ad'].split()[0]}</span><br>"
                 html += "</td></tr>"
             st.markdown(html + "</table>", unsafe_allow_html=True)
-            
+
             conn = sqlite3.connect('vardiya_sistemi.db')
             conn.execute("DELETE FROM VardiyaKayitlari WHERE hafta_numarasi=?", (hafta_num,))
             conn.executemany("INSERT INTO VardiyaKayitlari (personel_id, tarih, hafta_numarasi, vardiya_tipi) VALUES (?,?,?,?)", kayitlar)
             conn.commit()
             conn.close()
         else:
-            st.error("Kapasite yetersiz! Lütfen Kural Ayarları'ndan kısıtları gevşetmeyi dene.")
+            st.error("Kapasite yetersiz! Lütfen Kural Ayarları'ndan kısıtları gevşetmeyi dene veya personel/izin sayısını kontrol et.")
